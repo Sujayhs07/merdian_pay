@@ -30,8 +30,13 @@ interface AuthContextType {
   loginWithWallet: (walletAddress: string, businessName?: string) => Promise<void>;
   loginAsGuest: (walletAddress?: string) => Promise<void>;
   logout: () => void;
-  updateUserSettlement: (address: string) => Promise<void>;
-  updateBusinessName: (name: string) => Promise<void>;
+  updateUserProfile: (params: {
+    businessName?: string;
+    settlementAddress?: string | null;
+    password?: string;
+  }) => Promise<UserProfile>;
+  updateUserSettlement: (address: string, password?: string) => Promise<void>;
+  updateBusinessName: (name: string, password?: string) => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
@@ -88,13 +93,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setUser(null);
   };
 
-  const updateUserSettlement = async (address: string) => {
-    const updated = await updateProfileApi({ settlementAddress: address });
+  const updateUserProfile = async (params: {
+    businessName?: string;
+    settlementAddress?: string | null;
+    password?: string;
+  }) => {
+    const updated = await updateProfileApi(params);
+    setUser(updated);
+    return updated;
+  };
+
+  const updateUserSettlement = async (address: string, password?: string) => {
+    const updated = await updateProfileApi({ settlementAddress: address, password });
     setUser(updated);
   };
 
-  const updateBusinessName = async (name: string) => {
-    const updated = await updateProfileApi({ businessName: name });
+  const updateBusinessName = async (name: string, password?: string) => {
+    const updated = await updateProfileApi({ businessName: name, password });
     setUser(updated);
   };
 
@@ -108,6 +123,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         loginWithWallet,
         loginAsGuest,
         logout,
+        updateUserProfile,
         updateUserSettlement,
         updateBusinessName,
         refreshUser,

@@ -65,8 +65,13 @@ export async function sendPayment(opts: {
     // yet — common on a first-time payment to a new address.
     try {
       await getAccount(connection, toAta);
-    } catch (err) {
-      if (err instanceof TokenAccountNotFoundError) {
+    } catch (err: any) {
+      if (
+        err instanceof TokenAccountNotFoundError ||
+        err?.name === "TokenAccountNotFoundError" ||
+        err?.message?.includes("could not find account") ||
+        err?.message?.includes("TokenAccountNotFoundError")
+      ) {
         tx.add(
           createAssociatedTokenAccountInstruction(
             wallet.publicKey,

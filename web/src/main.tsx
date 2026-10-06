@@ -14,6 +14,7 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import "./styles.css";
 import App from "./App";
 import { AuthProvider } from "./lib/AuthContext";
+import { ThemeProvider } from "./lib/ThemeContext";
 
 const NETWORK = "devnet";
 
@@ -25,15 +26,17 @@ function Root() {
   );
 
   return (
-    <ConnectionProvider endpoint={endpoint}>
-      <WalletProvider wallets={wallets} autoConnect>
-        <WalletModalProvider>
-          <AuthProvider>
-            <App />
-          </AuthProvider>
-        </WalletModalProvider>
-      </WalletProvider>
-    </ConnectionProvider>
+    <ThemeProvider>
+      <ConnectionProvider endpoint={endpoint}>
+        <WalletProvider wallets={wallets} autoConnect>
+          <WalletModalProvider>
+            <AuthProvider>
+              <App />
+            </AuthProvider>
+          </WalletModalProvider>
+        </WalletProvider>
+      </ConnectionProvider>
+    </ThemeProvider>
   );
 }
 

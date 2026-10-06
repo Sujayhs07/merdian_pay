@@ -4,6 +4,7 @@ export interface UserProfile {
   businessName: string;
   settlementAddress: string | null;
   isGuest?: boolean;
+  hasPassword?: boolean;
   createdAt: number;
 }
 
@@ -129,6 +130,7 @@ export async function fetchCurrentUser(): Promise<UserProfile | null> {
 export async function updateProfile(patch: {
   businessName?: string;
   settlementAddress?: string | null;
+  password?: string;
 }): Promise<UserProfile> {
   const res = await authFetch<{ user: UserProfile }>("/api/auth/profile", {
     method: "PUT",

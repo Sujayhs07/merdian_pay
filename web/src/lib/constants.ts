@@ -49,3 +49,16 @@ export function isValidSolanaAddress(address: string | null | undefined): boolea
   }
 }
 
+export function formatFullDateTime(timestamp: number | string | Date): string {
+  const d = new Date(timestamp);
+  return d.toLocaleString("en-US", {
+    month: "numeric",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+}
+

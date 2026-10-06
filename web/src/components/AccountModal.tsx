@@ -1,17 +1,24 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useAuth } from "../lib/AuthContext";
+import { useTheme } from "../lib/ThemeContext";
 import { shortAddress, isValidSolanaAddress } from "../lib/constants";
+import { IconAlertTriangle, IconCheck, IconLogOut, IconShield, IconSun, IconMoon } from "./Icons";
+import LogoutModal from "./LogoutModal";
 
 interface AccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenAuth?: (mode: "login" | "register") => void;
+  onOpenLogout?: () => void;
 }
 
-export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountModalProps) {
-  const { user, logout, updateBusinessName, updateUserSettlement } = useAuth();
-  const { publicKey } = useWallet();
+export default function AccountModal({ isOpen, onClose, onOpenAuth, onOpenLogout }: AccountModalProps) {
+  const { user, updateUserProfile } = useAuth();
+  const { theme, setTheme } = useTheme();
+  const { publicKey, disconnect, select } = useWallet();
+  const { setVisible } = useWalletModal();
 
   const [businessName, setBusinessName] = useState(user?.businessName || "");
   const [settlementAddress, setSettlementAddress] = useState(
@@ -21,10 +28,21 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
 
+  // Security password verification modal state (pops up when saving changes)
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
   useEffect(() => {
     if (user) {
       setBusinessName(user.businessName || "");
       setSettlementAddress(user.settlementAddress || "");
+      setPassword("");
+      setShowPassword(false);
+      setVerifyModalOpen(false);
+      setVerifyError(null);
       setMsg(null);
       setConfirmingLogout(false);
     }
@@ -37,19 +55,42 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setMsg(null);
+
+    const nameChanged = businessName.trim() !== (user?.businessName || "");
+    const settlementChanged = settlementAddress.trim() !== (user?.settlementAddress || "");
+
+    if (!nameChanged && !settlementChanged) {
+      setMsg({ text: "No changes detected to save." });
+      return;
+    }
+
+    if (hasSettlement && !isSettlementValid) {
+      setMsg({
+        text: "Invalid Solana address format. Must be a valid 32–44 character base58 public key.",
+        error: true,
+      });
+      return;
+    }
+
+    const requiresPassword = user?.hasPassword !== false && !user?.isGuest;
+    if (requiresPassword) {
+      // Pop up the verification modal
+      setPassword("");
+      setShowPassword(false);
+      setVerifyError(null);
+      setVerifyModalOpen(true);
+      return;
+    }
+
+    // Direct save for guest or accounts without a password
+    setSaving(true);
     try {
-      if (hasSettlement && !isSettlementValid) {
-        throw new Error("Invalid Solana address format. Must be a valid 32–44 character base58 public key.");
-      }
-      if (businessName.trim() && businessName !== user?.businessName) {
-        await updateBusinessName(businessName.trim());
-      }
-      if (settlementAddress !== (user?.settlementAddress || "")) {
-        await updateUserSettlement(settlementAddress.trim());
-      }
-      setMsg({ text: "Profile updated successfully!" });
+      await updateUserProfile({
+        businessName: businessName.trim(),
+        settlementAddress: settlementAddress.trim() || null,
+      });
+      setMsg({ text: "Account details updated successfully!" });
     } catch (err) {
       setMsg({
         text: err instanceof Error ? err.message : "Failed to update profile.",
@@ -60,10 +101,53 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
     }
   }
 
+  async function handleConfirmVerification(e: React.FormEvent) {
+    e.preventDefault();
+    if (!password) {
+      setVerifyError("Please enter your current password.");
+      return;
+    }
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      await updateUserProfile({
+        businessName: businessName.trim(),
+        settlementAddress: settlementAddress.trim() || null,
+        password,
+      });
+      setVerifyModalOpen(false);
+      setPassword("");
+      setMsg({ text: "Account details verified and updated successfully!" });
+    } catch (err) {
+      setVerifyError(
+        err instanceof Error ? err.message : "Password verification failed. Please try again."
+      );
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   function handleUseConnectedWallet() {
     if (publicKey) {
       setSettlementAddress(publicKey.toBase58());
     }
+  }
+
+  async function handleSwitchWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
+    setVisible(true);
+  }
+
+  async function handleDisconnectWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
   }
 
   return (
@@ -170,22 +254,81 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
             </div>
             {hasSettlement ? (
               isSettlementValid ? (
-                <p className="hint success">
-                  ✓ Valid Solana address:{" "}
+                <p className="hint success" style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <IconCheck size={13} style={{ color: "var(--signal)" }} />
+                  <span>Valid Solana address:{" "}</span>
                   <span style={{ fontFamily: "var(--mono)" }}>
                     {shortAddress(settlementAddress.trim(), 6)}
                   </span>
                 </p>
               ) : (
                 <p className="hint error">
-                  ✗ Invalid Solana address (must be a valid 32–44 character base58 public key)
+                  Invalid Solana address (must be a valid 32–44 character base58 public key)
                 </p>
               )
             ) : (
-              <p className="hint" style={{ color: "var(--amber)" }}>
-                ⚠️ No settlement address set. You must set one to receive USDC.
+              <p className="hint" style={{ color: "var(--amber)", display: "flex", alignItems: "center", gap: 5 }}>
+                <IconAlertTriangle size={13} style={{ color: "var(--amber)" }} />
+                <span>No settlement address set. You must set one to receive USDC.</span>
               </p>
             )}
+          </div>
+
+          <div style={{ background: "var(--ink)", border: "1px solid var(--ink-line)", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Connected Web3 Wallet:</span>
+              {publicKey ? (
+                <span style={{ fontSize: 12, fontFamily: "var(--mono)", color: "var(--signal)", fontWeight: 600 }}>
+                  {shortAddress(publicKey.toBase58(), 6)}
+                </span>
+              ) : (
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>None connected</span>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              {publicKey ? (
+                <>
+                  {settlementAddress !== publicKey.toBase58() && (
+                    <button
+                      type="button"
+                      className="btn-inline"
+                      onClick={handleUseConnectedWallet}
+                      title="Set connected wallet as payout address"
+                      style={{ fontSize: 11, padding: "4px 8px" }}
+                    >
+                      Use as Payout
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-inline"
+                    onClick={handleSwitchWallet}
+                    title="Switch to another wallet or account"
+                    style={{ fontSize: 11, padding: "4px 8px" }}
+                  >
+                    Change Wallet
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-inline"
+                    onClick={handleDisconnectWallet}
+                    title="Disconnect this wallet"
+                    style={{ fontSize: 11, padding: "4px 8px", color: "var(--danger)", borderColor: "rgba(232, 97, 61, 0.4)" }}
+                  >
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-inline"
+                  onClick={() => setVisible(true)}
+                  style={{ fontSize: 11, padding: "4px 10px", color: "var(--signal)" }}
+                >
+                  Connect Wallet
+                </button>
+              )}
+            </div>
           </div>
 
           {msg && (
@@ -194,11 +337,50 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
             </p>
           )}
 
+          {/* Appearance & Theme Selector */}
+          <div style={{ margin: "16px 0 14px" }}>
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "var(--text-dim)", marginBottom: 8 }}>
+              Interface Theme
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <button
+                type="button"
+                className="btn-header"
+                onClick={() => setTheme("dark")}
+                style={{
+                  padding: "10px",
+                  justifyContent: "center",
+                  border: theme === "dark" ? "2px solid var(--signal)" : "1px solid var(--ink-line)",
+                  background: theme === "dark" ? "rgba(46, 200, 134, 0.08)" : "var(--ink)",
+                  color: theme === "dark" ? "var(--text)" : "var(--text-dim)",
+                }}
+              >
+                <IconMoon size={15} style={{ color: "var(--info)" }} />
+                <span style={{ fontWeight: 600 }}>Dark Theme</span>
+              </button>
+              <button
+                type="button"
+                className="btn-header"
+                onClick={() => setTheme("light")}
+                style={{
+                  padding: "10px",
+                  justifyContent: "center",
+                  border: theme === "light" ? "2px solid var(--signal)" : "1px solid var(--ink-line)",
+                  background: theme === "light" ? "rgba(46, 200, 134, 0.08)" : "var(--ink)",
+                  color: theme === "light" ? "var(--text)" : "var(--text-dim)",
+                }}
+              >
+                <IconSun size={15} style={{ color: "var(--amber)" }} />
+                <span style={{ fontWeight: 600 }}>Light Theme</span>
+              </button>
+            </div>
+          </div>
+
           <button
             type="submit"
             className="primary"
             disabled={saving}
-            style={{ marginTop: 12 }}
+            style={{ marginTop: 8 }}
           >
             {saving ? "Saving…" : "Save Changes"}
           </button>
@@ -206,93 +388,187 @@ export default function AccountModal({ isOpen, onClose, onOpenAuth }: AccountMod
 
         <div className="divider" style={{ margin: "24px 0" }} />
 
-        {confirmingLogout ? (
-          <div
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)" }}>
+              Account ID: {shortAddress(user.id, 6)}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              if (onOpenLogout) {
+                onClose();
+                onOpenLogout();
+              } else {
+                setConfirmingLogout(true);
+              }
+            }}
             style={{
-              background: "rgba(232, 97, 61, 0.08)",
-              border: "1px solid rgba(232, 97, 61, 0.3)",
-              borderRadius: 8,
-              padding: "16px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 14,
-              animation: "fadeIn 0.15s ease-out",
+              width: "auto",
+              padding: "8px 16px",
+              color: "var(--danger)",
+              borderColor: "rgba(232, 97, 61, 0.4)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 18 }}>⚠️</span>
-              <div>
-                <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
-                  Are you sure you want to log out?
-                </p>
-                <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--text-dim)" }}>
-                  {user.isGuest
-                    ? "Demo session data will be reset. You can log back in at any time."
-                    : "You will need your password or wallet to sign back in."}
-                </p>
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center" }}>
-              <button
-                type="button"
-                className="secondary"
-                style={{
-                  width: "auto",
-                  padding: "7px 14px",
-                  fontSize: 13,
-                  color: "var(--danger)",
-                  borderColor: "rgba(232, 97, 61, 0.35)",
-                  background: "transparent",
-                }}
-                onClick={() => {
-                  logout();
-                  setConfirmingLogout(false);
-                  onClose();
-                }}
-              >
-                Yes, Log Out
-              </button>
-              <button
-                type="button"
-                className="primary"
-                autoFocus
-                style={{
-                  width: "auto",
-                  padding: "7px 18px",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  background: "var(--signal)",
-                  color: "#06241a",
-                  boxShadow: "0 0 12px rgba(46, 213, 115, 0.35)",
-                  border: "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => setConfirmingLogout(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)" }}>
-                Account ID: {shortAddress(user.id, 6)}
-              </p>
-            </div>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setConfirmingLogout(true)}
+            <IconLogOut size={13} />
+            <span>Log Out</span>
+          </button>
+        </div>
+
+        <LogoutModal
+          isOpen={confirmingLogout}
+          onClose={() => setConfirmingLogout(false)}
+        />
+
+        {/* Security Password Verification Popup Modal */}
+        {verifyModalOpen && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setVerifyModalOpen(false)}
+            style={{ zIndex: 1250 }}
+          >
+            <div
+              className="modal-card"
+              onClick={(e) => e.stopPropagation()}
               style={{
-                width: "auto",
-                padding: "8px 16px",
-                color: "var(--danger)",
-                borderColor: "rgba(232, 97, 61, 0.4)",
+                maxWidth: 440,
+                width: "92%",
+                padding: "28px 24px",
+                textAlign: "left",
+                animation: "modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
               }}
             >
-              Log Out
-            </button>
+              <button
+                className="modal-close"
+                onClick={() => setVerifyModalOpen(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    background: "var(--signal-tint)",
+                    border: "1px solid var(--signal-border)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--signal)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconShield size={20} />
+                </div>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "var(--text)" }}>
+                      Verify Account Password
+                    </h3>
+                    <span style={{ color: "var(--signal)", fontWeight: 700, fontSize: 16 }}>*</span>
+                  </div>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      color: "var(--signal)",
+                    }}
+                  >
+                    Security Verification
+                  </span>
+                </div>
+              </div>
+
+              <p style={{ margin: "14px 0 16px", fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Enter your password to authorize modifications to your business name or settlement wallet ID.
+              </p>
+
+              <form onSubmit={handleConfirmVerification}>
+                <div className="field" style={{ marginBottom: 14 }}>
+                  <label
+                    htmlFor="verify-account-password"
+                    style={{ fontSize: 12, color: "var(--text)", marginBottom: 6, display: "block", fontWeight: 500 }}
+                  >
+                    Enter current password to authorize changes
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      id="verify-account-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Enter current password to authorize changes"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        setVerifyError(null);
+                      }}
+                      autoFocus
+                      required
+                      autoComplete="current-password"
+                      style={{ paddingRight: 64, width: "100%" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      style={{
+                        position: "absolute",
+                        right: 8,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        color: "var(--text-dim)",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: 500,
+                        padding: "4px 8px",
+                      }}
+                      title={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                </div>
+
+                {verifyError && (
+                  <p className="hint error" style={{ margin: "0 0 14px", fontSize: 12 }}>
+                    {verifyError}
+                  </p>
+                )}
+
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setVerifyModalOpen(false);
+                      setPassword("");
+                      setVerifyError(null);
+                    }}
+                    style={{ flex: 1, height: 40 }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="primary"
+                    disabled={verifying || !password.trim()}
+                    style={{ flex: 1.2, height: 40 }}
+                  >
+                    {verifying ? "Verifying…" : "Confirm & Save"}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
       </div>

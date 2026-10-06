@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useAuth } from "../lib/AuthContext";
 import { shortAddress, isValidSolanaAddress } from "../lib/constants";
+import { IconCheck, IconSparkles, IconKey } from "./Icons";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -15,7 +17,8 @@ export default function AuthModal({
   initialMode = "login",
 }: AuthModalProps) {
   const { login, register, loginWithWallet, loginAsGuest } = useAuth();
-  const { publicKey } = useWallet();
+  const { publicKey, disconnect, select } = useWallet();
+  const { setVisible } = useWalletModal();
 
   const [mode, setMode] = useState<"login" | "register">(initialMode);
   const [email, setEmail] = useState("");
@@ -75,7 +78,7 @@ export default function AuthModal({
 
   async function handleWalletAuth() {
     if (!publicKey) {
-      setError("Please connect your Solana wallet first using the wallet button.");
+      setVisible(true);
       return;
     }
     setError(null);
@@ -93,11 +96,28 @@ export default function AuthModal({
     }
   }
 
+  async function handleSwitchWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
+    setVisible(true);
+  }
+
+  async function handleDisconnectWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
+  }
+
   async function handleDemoGuest() {
     setError(null);
     setLoading(true);
     try {
-      await loginAsGuest(publicKey ? publicKey.toBase58() : undefined);
+      await loginAsGuest();
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Demo guest login failed.");
@@ -203,9 +223,13 @@ export default function AuthModal({
               </div>
               {hasSettlementInput ? (
                 isSettlementValid ? (
-                  <p className="hint success">✓ Valid Solana address: {shortAddress(settlementAddress.trim(), 6)}</p>
+                  <p className="hint success" style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <IconCheck size={13} style={{ color: "var(--signal)" }} />
+                    <span>Valid Solana address:</span>
+                    <span style={{ fontFamily: "var(--mono)" }}>{shortAddress(settlementAddress.trim(), 6)}</span>
+                  </p>
                 ) : (
-                  <p className="hint error">✗ Invalid Solana address (must be a valid 32–44 character base58 public key)</p>
+                  <p className="hint error">Invalid Solana address (must be a valid 32–44 character base58 public key)</p>
                 )
               ) : (
                 <p className="hint">Customer payments will settle directly to this Solana address.</p>
@@ -236,11 +260,43 @@ export default function AuthModal({
           className="secondary"
           disabled={loading}
           onClick={handleWalletAuth}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
         >
-          {publicKey
-            ? `Sign in as ${shortAddress(publicKey.toBase58(), 4)}`
-            : "Sign in with Connected Wallet"}
+          <IconKey size={14} style={{ color: "var(--signal)" }} />
+          <span>
+            {publicKey
+              ? `Sign in as ${shortAddress(publicKey.toBase58(), 4)}`
+              : "Select & Sign in with Wallet"}
+          </span>
         </button>
+
+        {publicKey && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, padding: "0 4px" }}>
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              Wallet: <strong style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>{shortAddress(publicKey.toBase58(), 4)}</strong>
+            </span>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                type="button"
+                className="link-out"
+                onClick={handleSwitchWallet}
+                title="Select a different wallet"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11 }}
+              >
+                Change Wallet
+              </button>
+              <button
+                type="button"
+                className="link-out"
+                onClick={handleDisconnectWallet}
+                title="Disconnect current wallet"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--danger)" }}
+              >
+                Disconnect
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="or-divider">instant demo</div>
 
@@ -262,7 +318,8 @@ export default function AuthModal({
           disabled={loading}
           onClick={handleDemoGuest}
         >
-          <span>🚀 Explore as Demo Guest</span>
+          <IconSparkles size={16} />
+          <span>Explore as Demo Guest</span>
         </button>
         <p className="hint" style={{ textAlign: "center", marginTop: 8 }}>
           Instant 1-click access with sample merchant data for judges & testers.

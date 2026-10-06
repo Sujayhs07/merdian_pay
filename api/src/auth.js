@@ -1,3 +1,4 @@
+import "./env.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { getUserById } from "./db.js";

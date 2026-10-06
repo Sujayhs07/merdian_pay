@@ -7,6 +7,7 @@ export interface PaymentRequest {
   merchantUserId?: string;
   amount: string;
   description: string;
+  redirectUrl?: string;
   token: string;
   status: "pending" | "paid" | "expired";
   sourceChain: "solana" | "ethereum" | null;
@@ -66,7 +67,8 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_
 export function createPaymentRequest(params: {
   merchant?: string;
   amount: string;
-  description?: string;
+  description: string;
+  redirectUrl?: string;
   token?: string;
   businessName?: string;
 }): Promise<PaymentRequest> {
@@ -94,4 +96,17 @@ export function completePaymentRequest(
     { method: "POST", body: JSON.stringify(params) },
     20_000
   );
+}
+
+export function sendPaymentRequestEmail(
+  id: string,
+  recipientEmail: string
+): Promise<{ success: boolean; message: string; provider?: string; note?: string }> {
+  return request(`/api/requests/${id}/email`, {
+    method: "POST",
+    body: JSON.stringify({
+      recipientEmail,
+      origin: window.location.origin,
+    }),
+  });
 }

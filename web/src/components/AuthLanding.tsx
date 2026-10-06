@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import WalletButton from "./WalletButton";
+import { IconShield, IconZap, IconArrowsExchange, IconSparkles, IconKey } from "./Icons";
 import { useAuth } from "../lib/AuthContext";
 import { shortAddress, isValidSolanaAddress } from "../lib/constants";
 
@@ -10,7 +12,8 @@ interface AuthLandingProps {
 
 export default function AuthLanding({ initialMode = "login" }: AuthLandingProps) {
   const { login, register, loginWithWallet, loginAsGuest } = useAuth();
-  const { publicKey } = useWallet();
+  const { publicKey, disconnect, select } = useWallet();
+  const { setVisible } = useWalletModal();
 
   const [mode, setMode] = useState<"login" | "register">(initialMode);
   const [email, setEmail] = useState("");
@@ -103,7 +106,7 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
     setError(null);
     setLoading(true);
     try {
-      await loginAsGuest(publicKey ? publicKey.toBase58() : undefined);
+      await loginAsGuest();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Demo guest login failed.");
     } finally {
@@ -115,6 +118,23 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
     if (publicKey) {
       setSettlementAddress(publicKey.toBase58());
     }
+  }
+
+  async function handleSwitchWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
+    setVisible(true);
+  }
+
+  async function handleDisconnectWallet() {
+    try {
+      localStorage.removeItem("walletName");
+    } catch {}
+    await disconnect();
+    select(null);
   }
 
   const currentSim = simTransactions[simIndex];
@@ -134,7 +154,10 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
               <span className="radar-wave" />
               <span className="landing-pill-pulse" />
             </div>
-            <span>⚡ Meridian Settlement Protocol • Solana Devnet</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <IconZap size={11} />
+              Meridian Settlement Protocol · Solana Devnet
+            </span>
           </div>
 
           <h1 className="landing-headline">
@@ -163,7 +186,7 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
                   <span className="stat-dot green" />
                   <div>
                     <p className="stat-label">Live Solana Settlement</p>
-                    <p className="stat-value">{currentSim.amount} ➔ {currentSim.merchant}</p>
+                    <p className="stat-value">{currentSim.amount} → {currentSim.merchant}</p>
                   </div>
                 </div>
 
@@ -181,21 +204,27 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
           {/* Feature Cards Grid with Interactive Hover & Glow */}
           <div className="landing-features-grid">
             <div className="feature-item">
-              <span className="feature-icon">🛡️</span>
+              <div className="feature-icon-wrap">
+                <IconShield size={14} />
+              </div>
               <div>
                 <p className="feature-title">Self-Custodial</p>
                 <p className="feature-desc">Funds land directly in your non-custodial Solana wallet</p>
               </div>
             </div>
             <div className="feature-item">
-              <span className="feature-icon">⚡</span>
+              <div className="feature-icon-wrap">
+                <IconZap size={14} />
+              </div>
               <div>
                 <p className="feature-title">Sub-Second QR</p>
                 <p className="feature-desc">Dynamic Solana Pay QR codes with real-time detection</p>
               </div>
             </div>
             <div className="feature-item">
-              <span className="feature-icon">🔄</span>
+              <div className="feature-icon-wrap">
+                <IconArrowsExchange size={14} />
+              </div>
               <div>
                 <p className="feature-title">Cross-Chain Ready</p>
                 <p className="feature-desc">Bridging Ethereum & Solana via Circle USDC standards</p>
@@ -204,9 +233,9 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
           </div>
         </div>
 
-        {/* RIGHT SIDE: Authentication Card with Phantom Glass Aesthetic */}
+        {/* RIGHT SIDE: Authentication Card */}
         <div className="landing-right">
-          <div className="card auth-card phantom-glass-card">
+          <div className="card auth-card">
             <div className="tabs" style={{ marginBottom: 20 }}>
               <button
                 type="button"
@@ -335,25 +364,53 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {publicKey ? (
-                <button
-                  type="button"
-                  className="secondary phantom-wallet-btn"
-                  disabled={loading}
-                  onClick={handleWalletAuth}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 8,
-                    borderColor: "var(--signal-dim)",
-                  }}
-                >
-                  <span>🔑</span>
-                  <span>Sign in with Wallet ({shortAddress(publicKey.toBase58(), 4)})</span>
-                </button>
+                <div>
+                  <button
+                    type="button"
+                    className="secondary phantom-wallet-btn"
+                    disabled={loading}
+                    onClick={handleWalletAuth}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      width: "100%",
+                      borderColor: "var(--signal-dim)",
+                    }}
+                  >
+                    <IconKey size={14} style={{ color: "var(--signal)" }} />
+                    <span>Sign in with Wallet ({shortAddress(publicKey.toBase58(), 4)})</span>
+                  </button>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, padding: "0 4px" }}>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                      Connected: <strong style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>{shortAddress(publicKey.toBase58(), 4)}</strong>
+                    </span>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button
+                        type="button"
+                        className="link-out"
+                        onClick={handleSwitchWallet}
+                        title="Select a different wallet"
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11 }}
+                      >
+                        Change Wallet
+                      </button>
+                      <button
+                        type="button"
+                        className="link-out"
+                        onClick={handleDisconnectWallet}
+                        title="Disconnect current wallet"
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--danger)" }}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                  <WalletMultiButton style={{ width: "100%", justifyContent: "center", height: 42 }} />
+                  <WalletButton fullWidth style={{ height: 42 }} />
                   <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
                     Connect Phantom, Solflare or Backpack for 1-click Web3 login
                   </span>
@@ -364,7 +421,7 @@ export default function AuthLanding({ initialMode = "login" }: AuthLandingProps)
             {/* PROMINENT GUEST LOGIN SECTION WITH PHANTOM AMBER GLOW */}
             <div className="guest-box phantom-guest-box" style={{ marginTop: 20 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 16 }}>🚀</span>
+                <IconSparkles size={16} style={{ color: "var(--amber)" }} />
                 <span style={{ fontWeight: 600, fontSize: 13, color: "var(--amber)" }}>
                   Demo Guest Mode
                 </span>
