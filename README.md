@@ -1,137 +1,283 @@
-# Meridian — chain-agnostic USDC checkout, settled on Solana
+# Meridian Pay
 
-A merchant creates a payment request, shares a link/QR, and the customer
-pays. Solana is the settlement layer; Ethereum is planned as a CCTP ingress
-rail (see `crypto-worlds-fair-roadmap.md` for the full product plan).
+> **Chain-Agnostic USDC Checkout & POS Terminal, Settled on Solana**
 
-## What's actually working (tested by me before packaging)
+Meridian Pay is a non-custodial crypto payment gateway and Point-of-Sale (POS) terminal. It enables merchants to accept digital dollar payments from customers regardless of which blockchain they hold funds on. Solana serves as the high-speed, sub-cent settlement engine, while Ethereum acts as an ingress rail powered by Circle's Cross-Chain Transfer Protocol (CCTP).
 
-- **Real backend** (`api/`) — Express + a JSON-file store (no native dependencies to compile). Payment requests persist,
-  have server-tracked status (`pending` / `paid` / `expired`), and a 24h
-  expiry.
-- **On-chain verification** (`api/src/solana-verify.js`) — the backend does
-  not trust the browser's word that a payment happened. It fetches the
-  transaction from Solana devnet itself and checks it actually transfers the
-  requested USDC amount into the merchant's token account before marking a
-  request `paid`. I tested this rejects a fake signature (`502`) and
-  confirmed create → fetch → list → complete all round-trip correctly.
-- **Frontend** (`web/`) — wallet connect, merchant dashboard (USDC balance,
-  today's volume, payment list with click-to-expand reconciliation detail),
-  "Request payment" flow (amount + description → shareable link + QR), and
-  a customer pay page that completes a real devnet USDC transfer with the
-  description attached as an on-chain memo.
-- **Reliability handling** — API calls time out (10s, 20s for the
-  on-chain-verifying complete call) instead of hanging forever; wallet
-  rejection (declining a signature prompt) is treated as a cancellation,
-  not an error; network failures vs. "not found" vs. "expired" are shown
-  distinctly, each with a working retry where relevant.
+---
 
-## What's NOT working yet — read this before demoing
+## Architecture Overview
 
-**"Pay with Ethereum" is a disabled, honestly-labeled stub.** I built and
-then removed two different attempts at this:
+```mermaid
+flowchart TD
+    subgraph Merchant["Merchant Surface"]
+        M1["Dashboard & Analytics"]
+        M2["Point of Sale (POS) QR"]
+        M3["Email Invoice Dispatch"]
+    end
 
-1. A hand-rolled CCTP burn (correct contract addresses, verified against
-   Circle's docs, but untested against a live chain — I have no network
-   access to Ethereum RPCs or Circle's API from the environment that built
-   this).
-2. Circle's official Bridge Kit (`kit.bridge()`), which turned out to
-   assume a **self-bridge** pattern (the same person signs on both ends).
-   That doesn't fit this product — your customer pays and your merchant
-   receives, without the merchant present to sign anything.
+    subgraph Customer["Customer Surface"]
+        C1["Checkout Page (?rid=...)"]
+        C2["Solana Pay (Phantom / Solflare)"]
+        C3["Ethereum Pay (MetaMask Sepolia)"]
+    end
 
-The correct fix is a **backend-mediated completion**: the customer burns
-USDC on Ethereum, and your backend — using Circle Developer-Controlled
-Wallets (API key + entity secret) — automatically completes the Solana-side
-mint into the merchant's wallet, no signature needed from the merchant.
-That requires a Circle Developer account, which only you can create (see
-the roadmap doc for the setup steps). Once you have the API key and entity
-secret, this is the next thing to build — the backend's
-`/api/requests/:id/complete` route already has the `sourceChain: "ethereum"`
-shape ready; it currently returns `501` on purpose instead of pretending to
-work.
+    subgraph Backend["Meridian Backend (api/)"]
+        API["Express API Server"]
+        AUTH["Auth & JWT (Email / Wallet / Guest)"]
+        STORE[("Atomic JSON Store (meridianpay-db.json)")]
+        MAIL["Email Dispatcher (Resend / SMTP)"]
+        SOL_VERIFY["Solana On-Chain Verifier"]
+        ETH_VERIFY["Ethereum Sepolia Verifier"]
+        RL["Rate Limiters & Anti-Replay Engine"]
+    end
 
-**Also not built:** deployment (runs locally only), the Anchor program
-mentioned in the roadmap (payment requests are tracked in a JSON file
-instead, which is fine for a hackathon demo), the demo video, and the
-actual Colosseum submission.
+    subgraph Blockchains["Settlement & Ingress Rails"]
+        SOL["Solana Devnet (SPL-USDC & SOL)"]
+        ETH["Ethereum Sepolia (USDC)"]
+        CCTP["Circle CCTP (Burn & Mint Protocol)"]
+    end
 
-## Running it locally
+    M1 -->|Create Invoice| API
+    M2 -->|Instant POS QR| API
+    M3 -->|Dispatch Invoice| MAIL
+    MAIL -->|Email Link| Customer
+    Customer --> C1
+    C1 --> C2
+    C1 --> C3
 
-Two terminals:
+    C2 -->|Sign & Send TX| SOL
+    C3 -->|Burn USDC| ETH
+    ETH -->|Attestation & Relayer| CCTP
+    CCTP -->|Mint USDC| SOL
 
-```bash
-# Terminal 1 — backend
-cd api
-npm install
-npm run dev
-# → meridianpay API listening on http://localhost:8787
-
-# Terminal 2 — frontend
-cd web
-npm install
-npm run dev
-# → http://localhost:5173 (Vite proxies /api/* to the backend automatically)
+    C1 -->|Submit Signature| API
+    API --> RL
+    RL --> SOL_VERIFY
+    RL --> ETH_VERIFY
+    SOL_VERIFY -->|Confirm ATA & BlockTime| SOL
+    ETH_VERIFY -->|Query Receipts| ETH
+    API -->|Update Status to Paid| STORE
+    STORE -->|Real-Time Poll & Reconciliation| M1
+    STORE -->|Instant Payment Confirmation| C1
 ```
 
-You'll need a Phantom or Solflare wallet set to **devnet**:
-- Devnet SOL for fees: `solana airdrop 1 <your-address> --url devnet`, or
-  any devnet faucet
-- Devnet USDC to actually complete a payment: https://faucet.circle.com
-  (select Solana Devnet)
+---
 
-An `api/.env.example` is included — copy it to `api/.env` if/when you add
-Circle Developer credentials for the Ethereum completion step. Not required
-for the Solana-only flow; the backend runs fine with no `.env` at all.
+## Payment Lifecycle & Verification Flow
 
-### Trying it out
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Merchant
+    actor Customer
+    participant Frontend as Meridian Web App
+    participant Backend as Meridian API
+    participant Solana as Solana Devnet
+    participant Ethereum as Ethereum Sepolia / CCTP
 
-1. Open `http://localhost:5173`, connect your Solana wallet (top right).
-2. Click **Request payment**, enter an amount and description, generate
-   the link.
-3. Open that link in a different browser/incognito window (or just a new
-   tab — it reads the request from the backend either way), connect a
-   wallet with devnet USDC, and pay.
-4. Back on the dashboard, refresh — the payment should show as **Settled**,
-   and clicking the row expands the full reconciliation detail (tx hash,
-   timestamps, source/settlement chain).
+    Merchant->>Frontend: Creates invoice (Amount, Note, Token)
+    Frontend->>Backend: POST /api/requests
+    Backend-->>Frontend: Returns invoice (ID, 24h Expiry)
+    Merchant->>Customer: Shares QR code / Payment link / Email
 
-## Project structure
+    Customer->>Frontend: Opens checkout (?rid=id)
+    alt Pay with Solana
+        Customer->>Frontend: Connects Solana Wallet (Phantom / Solflare)
+        Frontend->>Solana: Transfers SPL-USDC + Memo
+        Solana-->>Frontend: Returns Transaction Signature
+        Frontend->>Backend: POST /api/requests/:id/complete (Solana Signature)
+        Backend->>Solana: Verifies ATA, Amount & BlockTime (Anti-Replay)
+        Solana-->>Backend: Confirmed on-chain
+    else Pay with Ethereum (CCTP)
+        Customer->>Frontend: Connects Ethereum Wallet (MetaMask Sepolia)
+        Frontend->>Ethereum: Burns USDC on Sepolia
+        Ethereum-->>Frontend: Returns Transaction Hash
+        Frontend->>Backend: POST /api/requests/:id/complete (Ethereum Hash)
+        Backend->>Ethereum: Verifies Sepolia Receipt
+        Backend->>Solana: Relayer Mints USDC to Merchant ATA
+    end
 
+    Backend->>Backend: Marks invoice as Paid
+    Backend-->>Frontend: Returns Paid Invoice & Reconciliation Data
+    Frontend-->>Customer: Displays Confirmed Receipt & Explorer Link
+    Frontend-->>Merchant: Updates Dashboard & Balances in Real Time
 ```
+
+---
+
+## Key Features
+
+### 1. Dual-Rail Checkout
+- **Solana Rail**: Native SPL-USDC transfer and SOL payments using `@solana/web3.js` and `@solana/spl-token`. Includes automatic Associated Token Account (ATA) creation for first-time recipients and SPL Memo program tagging.
+- **Ethereum Rail (CCTP)**: Ingress pipeline for Ethereum Sepolia USDC via Circle Cross-Chain Transfer Protocol (CCTP) burn-and-mint mechanics.
+
+### 2. Trustless Backend On-Chain Verification
+The backend does not rely on client-side confirmation flags:
+- Queries finalized Solana Devnet transactions directly via RPC.
+- Inspects top-level and inner instruction sets to ensure the recipient ATA received the exact invoice amount.
+- **Anti-Replay Protection**: Verifies the transaction's on-chain `blockTime` against the invoice `created_at` timestamp and enforces global signature deduplication to prevent replay attacks.
+- Multi-RPC Ethereum Sepolia receipt verification.
+
+### 3. Merchant Dashboard & Point-of-Sale (POS)
+- **Live Balances**: Real-time devnet SOL and SPL-USDC balance monitors.
+- **Financial Metrics**: Today's volume, all-time volume, Average Order Value (AOV), and Stripe processing fee savings calculator (2.9% + $0.30 comparison).
+- **Quick POS Terminal**: Instant dynamic QR code generator for in-person payments.
+- **Reconciliation Drawer**: Click-to-expand details showing explorer links, timestamps, and payment rails.
+- **Data Export**: One-click export to CSV and JSON.
+
+### 4. Hybrid Authentication
+- **Email & Password**: Secure salted hashing via `bcryptjs` and session tokens via JWT.
+- **Solana Wallet SSO**: 1-click authentication and automated account provisioning with Phantom, Solflare, or Backpack.
+- **1-Click Demo Guest Mode**: Instantly loads the terminal pre-populated with realistic invoices and transaction records for demonstration and judging.
+
+### 5. Automated Customer Invoicing
+- Direct email invoice dispatching with styled HTML templates.
+- Supports Resend API, custom SMTP (Gmail, AWS SES, SendGrid), and development simulation fallbacks.
+
+### 6. Developer Platform
+- Webhook simulation and testing engine (`/api/webhooks/test`).
+- Sliding-window rate limiters across auth, invoice creation, and payment verification endpoints.
+
+---
+
+## Tech Stack
+
+| Domain | Technologies |
+| :--- | :--- |
+| **Blockchain** | Solana Web3.js (`@solana/web3.js`), SPL Token (`@solana/spl-token`), Solana Wallet Adapter, Viem, Circle CCTP, Circle Developer-Controlled Wallets SDK |
+| **Frontend** | React 19, TypeScript, Vite, QRCode.react, Custom CSS Ledger Design System (Light/Dark mode) |
+| **Backend** | Node.js (ESM), Express 5, JWT, BcryptJS, Nodemailer, Nanoid |
+| **Persistence** | Atomic file-swapping JSON Store (`meridianpay-db.json`) with tenant isolation |
+| **Dev Tools** | Google Antigravity IDE, Gemini (AI Pair Programming), Oxlint |
+
+---
+
+## Project Structure
+
+```text
 meridianpay/
-  api/                             Express + JSON-file-store backend
-    src/
-      server.js                    routes: create/get/list/complete requests
-      db.js                        JSON-file store (payment_requests, no native deps)
-      solana-verify.js             verifies a signature actually paid on-chain
-  web/                             React + TypeScript frontend (Vite)
-    src/
-      main.tsx                     wallet provider setup (devnet)
-      App.tsx                      routes: merchant dashboard vs. customer pay page
-      styles.css                   design system (dark, ledger-style)
-      lib/
-        api.ts                     typed client for the backend, with timeouts
-        constants.ts                payment-link encode/decode, formatting helpers
-        payments.ts                 sendPayment() — the actual SOL/USDC transfer
-        useWalletData.ts            balance-fetching hook
-      components/
-        Dashboard.tsx               merchant view + reconciliation detail
-        CreatePaymentRequest.tsx    merchant: create a request, get link/QR
-        PayRequest.tsx              customer: pay page opened from a link
-  crypto-worlds-fair-roadmap.md    full product roadmap (architecture, 4-week plan, demo script)
+├── api/                               Express 5 REST Backend
+│   ├── scripts/
+│   │   └── create-circle-wallet.js    Circle Wallets SDK provisioner
+│   ├── src/
+│   │   ├── auth.js                    JWT signing, verification & password hashing
+│   │   ├── db.js                      Atomic JSON store with tenant isolation
+│   │   ├── email.js                   Responsive HTML invoice email generator
+│   │   ├── env.js                     Environment loader
+│   │   ├── ethereum-verify.js         Ethereum Sepolia RPC verification
+│   │   ├── server.js                  REST routes, rate limiters, security headers
+│   │   └── solana-verify.js           Solana devnet SPL verification & anti-replay
+│   ├── meridianpay-db.json            Persistent data file
+│   ├── .env.example
+│   └── package.json
+├── web/                               React 19 + TypeScript Frontend (Vite)
+│   ├── public/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── AccountModal.tsx       Merchant settlement settings & profile
+│   │   │   ├── AuthLanding.tsx        Landing page with login/registration
+│   │   │   ├── AuthModal.tsx          Modal auth interface
+│   │   │   ├── CreatePaymentRequest.tsx Dedicated invoice creation form
+│   │   │   ├── Dashboard.tsx          Merchant terminal, analytics & POS
+│   │   │   ├── Icons.tsx              Custom SVG icon system
+│   │   │   ├── LogoutModal.tsx        Sign-out confirmation
+│   │   │   ├── PayRequest.tsx         Customer checkout & payment rails
+│   │   │   └── WalletButton.tsx       Multi-wallet selector & switcher
+│   │   ├── lib/
+│   │   │   ├── api.ts                 Typed backend client with AbortControllers
+│   │   │   ├── auth.ts                Token storage & user profile state
+│   │   │   ├── AuthContext.tsx        Authentication context provider
+│   │   │   ├── constants.ts           Devnet mints, address helpers & link builders
+│   │   │   ├── payments.ts            Solana transaction builder & ATA check
+│   │   │   ├── ThemeContext.tsx       Dark / Light theme state manager
+│   │   │   └── useWalletData.ts       Live SOL & SPL-USDC balance fetcher
+│   │   ├── App.tsx                    Root application layout & route dispatcher
+│   │   ├── main.tsx                   Wallet adapter provider initialization
+│   │   └── styles.css                 Complete CSS design system
+│   ├── .npmrc                         Vercel & CI peer-dependency configuration
+│   ├── vercel.json                    SPA rewrite rules for deployment
+│   ├── vite.config.ts                 Polyfills & proxy configuration
+│   └── package.json
+└── README.md
 ```
 
-## What to do next, in order
+---
 
-1. **Run it yourself** and confirm the Solana-only flow works end to end —
-   this is your guaranteed-working fallback submission even if nothing
-   else gets finished.
-2. **Set up a Circle Developer account** (API key + entity secret) — needed
-   for the Ethereum completion step. Free for sandbox/testnet use.
-3. **Build the backend Circle Wallets integration** once you have those
-   credentials — this is the one piece that actually makes "Pay with
-   Ethereum" work.
-4. **Deploy** — Vercel for `web/`, Railway or Render for `api/` (needs a
-   persistent volume for meridianpay-db.json, or swap to Supabase Postgres).
-5. **Record the demo** and **submit** — script is in the roadmap doc.
+## Getting Started Locally
+
+### Prerequisites
+- Node.js 18+ installed
+- A Solana wallet (Phantom, Solflare, Backpack) set to **Solana Devnet**
+- Devnet SOL (from any faucet or `solana airdrop 1`)
+- Devnet USDC (from [Circle's Faucet](https://faucet.circle.com) selecting *Solana Devnet*)
+
+### Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Sujayhs07/merdian_pay.git
+   cd merdian_pay
+   ```
+
+2. **Start the Backend API:**
+   ```bash
+   cd api
+   npm install
+   npm run dev
+   # Server listens at http://localhost:8787
+   ```
+
+3. **Start the Frontend Application (in a second terminal):**
+   ```bash
+   cd web
+   npm install
+   npm run dev
+   # Frontend runs at http://localhost:5173
+   ```
+
+4. Open `http://localhost:5173` in your browser.
+
+---
+
+## Environment Variables
+
+### Backend (`api/.env`)
+```bash
+PORT=8787
+JWT_SECRET=meridianpay_secret_key_2026
+
+# Optional: Circle Developer-Controlled Wallets (for automated CCTP relayer minting)
+CIRCLE_API_KEY=
+CIRCLE_ENTITY_SECRET=
+CIRCLE_SOLANA_WALLET_ID=
+
+# Optional: Email Delivery (Resend API or SMTP)
+RESEND_API_KEY=
+EMAIL_FROM=invoices@yourdomain.com
+# Or SMTP:
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=your_email@gmail.com
+# SMTP_PASS=your_app_password
+```
+
+### Frontend (`web/.env`)
+```bash
+# In local development, leave empty to use the Vite proxy (/api -> http://localhost:8787)
+# In production, set to your deployed backend URL:
+VITE_API_URL=https://your-api.onrender.com
+```
+
+---
+
+## Deployment
+
+- **Backend (`api/`)**: Ready for deployment on [Render](https://render.com) or [Railway](https://railway.app). Set the root directory to `api`, build command to `npm install`, and start command to `npm start`.
+- **Frontend (`web/`)**: Ready for deployment on [Vercel](https://vercel.com). Set the root directory to `web`, framework preset to `Vite`, and provide the `VITE_API_URL` environment variable.
+
+---
+
+## License
+
+ISC License. Built for the Solana ecosystem.
